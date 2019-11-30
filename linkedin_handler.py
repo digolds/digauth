@@ -13,7 +13,7 @@ class linkedin_handler(base_handler):
         base_handler.__init__(self, config)
 
     def redirect_to(self):
-        return "https://www.linkedin.com/oauth/v2/authorization?client_id=%s&response_type=code&redirect_uri=%s&state=wakuangya" % (self.id,self.quote(self.auth_callback_url,safe=''))
+        return "https://www.linkedin.com/oauth/v2/authorization?client_id=%s&response_type=code&redirect_uri=%s&state=wakuangya&scope=%s" % (self.id,self.quote(self.auth_callback_url,safe=''),self.quote("r_liteprofile r_emailaddress w_member_social",safe=''))
     
     def auth_from(self, received_params):
         code = received_params.get('code','')
@@ -31,38 +31,62 @@ class linkedin_handler(base_handler):
         params['access_token']=token_data['access_token']
         params['expires_in']=int(time.time()+token_data['expires_in'])
         headers['Authorization'] = 'Bearer ' + params['access_token']
-        r = requests.get(url='https://api.linkedin.com/v1/people/~:(id,first-name,picture-url,email-address,public-profile-url)?format=json',headers=headers)
+        r = requests.get(url='https://api.linkedin.com/v2/me?projection=(id,firstName,lastName,profilePicture(displayImage~:playableStreams))',headers=headers)
         json_data = r.json()
-        email = json_data['emailAddress']
+        linkedId = json_data['id']
+        firstNameDict = json_data['firstName']
+        country = firstNameDict['preferredLocale']['country']
+        language = firstNameDict['preferredLocale']['language']
+        firstName = firstNameDict['localized'][language + '_' + country]
+        image_url = 'http://tvax3.sinaimg.cn/default/images/default_avatar_male_50.gif' if json_data.get('profilePicture',None) is None else json_data['profilePicture']['displayImage~']['elements'][0]['identifiers'][0]['identifier']
+        
+        r = requests.get(url='https://api.linkedin.com/v2/emailAddress?q=members&projection=(elements*(handle~))',headers=headers)
+        json_data = r.json()
+        email = json_data['elements'][0]['handle~']['emailAddress']
         auth_data = self.create_auth_data(\
-            json_data['id'],\
+            linkedId,\
             params['expires_in'],\
             email,\
-            json_data['firstName'],\
-            'http://tvax3.sinaimg.cn/default/images/default_avatar_male_50.gif' if json_data.get('pictureUrl',None) is None else json_data['pictureUrl'],\
+            firstName,\
+            image_url,\
             self.name,\
             params['access_token'],\
-            json_data['publicProfileUrl'])
+            '')
         return auth_data
     
     def share_to(self, content_dict):
         share_content = content_dict.get('content')
         submitted_url = content_dict.get('submitted-url')
-        image_url = content_dict.get('image_url')
         auth_token = content_dict.get('auth_token')
-        data={
-            "comment": share_content,
-            "content": {
-                "title": share_content,
-                "description": share_content,
-                "submitted-url": submitted_url,  
-                "submitted-image-url": image_url
+        data = {
+    "author": 'urn:li:person:' + content_dict.get("auth_id"),
+    "lifecycleState": "PUBLISHED",
+    "specificContent": {
+        "com.linkedin.ugc.ShareContent": {
+            "shareCommentary": {
+                "text": share_content
             },
-            "visibility": {
-                "code": "anyone"
-            }
+            "shareMediaCategory": "ARTICLE",
+            "media": [
+                {
+                    "status": "READY",
+                    "description": {
+                        "text": share_content
+                    },
+                    "originalUrl": submitted_url,
+                    "title": {
+                        "text": share_content
+                    }
+                }
+            ]
         }
+    },
+    "visibility": {
+        "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
+    }
+}
         headers = {'Content-Type': 'application/json','x-li-format': 'json'}
         headers['Authorization'] = 'Bearer ' + auth_token
-        r = requests.post(url = "https://api.linkedin.com/v1/people/~/shares?format=json", json = data, headers=headers)
+        headers['X-Restli-Protocol-Version'] = '2.0.0'
+        r = requests.post(url = "https://api.linkedin.com/v2/ugcPosts", json = data, headers=headers)
         return r.json()
